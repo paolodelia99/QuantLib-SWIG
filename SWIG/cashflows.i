@@ -5,6 +5,7 @@
  Copyright (C) 2010, 2011 Lluis Pujol Bajador
  Copyright (C) 2017, 2018, 2019, 2020 Matthias Lungwitz
  Copyright (C) 2021 Marcin Rybacki
+ Copyright (C) 2025 Paolo D'Elia
 
  This file is part of QuantLib, a free-software/open-source library
  for financial quantitative analysts and developers - http://quantlib.org/
@@ -241,7 +242,10 @@ class OvernightIndexedCoupon : public FloatingRateCoupon {
                 RateAveraging::Type averagingMethod = RateAveraging::Compound,
                 Natural lookbackDays = Null<Natural>(),
                 Natural lockoutDays = 0,
-                bool applyObservationShift = false);
+                bool applyObservationShift = false,
+                bool compoundSpread = false,
+                const Date& rateComputationStartDate = Date(),
+                const Date& rateComputationEndDate = Date());
     const std::vector<Date>& fixingDates() const;
     const std::vector<Date>& interestDates() const;
     const std::vector<Time>& dt() const;
@@ -251,6 +255,11 @@ class OvernightIndexedCoupon : public FloatingRateCoupon {
     Natural lockoutDays() const;
     bool applyObservationShift() const;
     bool canApplyTelescopicFormula() const;
+    bool compoundSpreadDaily() const;
+    Real effectiveSpread() const;
+    Real effectiveIndexFixing() const;
+    const Date& rateComputationStartDate() const;
+    const Date& rateComputationEndDate() const;
 };
 
 %inline %{
@@ -259,6 +268,34 @@ class OvernightIndexedCoupon : public FloatingRateCoupon {
         return ext::dynamic_pointer_cast<OvernightIndexedCoupon>(cf);
     }
 %}
+
+%shared_ptr(CappedFlooredOvernightIndexedCoupon)
+class CappedFlooredOvernightIndexedCoupon : public FloatingRateCoupon {
+    #if !defined(SWIGJAVA) && !defined(SWIGCSHARP)
+    %feature("kwargs") CappedFlooredOvernightIndexedCoupon;
+    #endif
+  public:
+    CappedFlooredOvernightIndexedCoupon(
+                const ext::shared_ptr<OvernightIndexedCoupon>& underlying,
+                Real cap = Null<Real>(),
+                Real floor = Null<Real>(), 
+                bool nakedOption = false,
+                bool dailyCapFloor = false);
+    Rate cap() const;
+    Rate floor() const;
+    Rate effectiveCap() const;
+    Rate effectiveFloor() const;
+    Real effectiveCapletVolatility() const;
+    Real effectiveFloorletVolatility() const;
+    bool isCapped() const;
+    bool isFloored() const;
+    void setPricer(const ext::shared_ptr<FloatingRateCouponPricer>& pricer);
+    ext::shared_ptr<OvernightIndexedCoupon> underlying() const;
+    bool nakedOption() const;
+    bool dailyCapFloor() const;
+    bool compoundSpreadDaily() const;
+    RateAveraging::Type averagingMethod() const;
+};
 
 %{
 using QuantLib::CappedFlooredCoupon;
@@ -407,8 +444,11 @@ class SubPeriodsCoupon: public FloatingRateCoupon {
 using QuantLib::IborCouponPricer;
 using QuantLib::BlackIborCouponPricer;
 using QuantLib::SubPeriodsPricer;
+using QuantLib::OvernightIndexedCouponPricer;
 using QuantLib::CompoundingOvernightIndexedCouponPricer;
 using QuantLib::ArithmeticAveragedOvernightIndexedCouponPricer;
+using QuantLib::BlackCompoundingOvernightIndexedCouponPricer;
+using QuantLib::BlackAveragingOvernightIndexedCouponPricer;
 using QuantLib::CompoundingMultipleResetsPricer;
 using QuantLib::AveragingMultipleResetsPricer;
 using QuantLib::CompoundingRatePricer;
@@ -446,14 +486,36 @@ class SubPeriodsPricer: public FloatingRateCouponPricer {
     SubPeriodsPricer();
 };
 
-%shared_ptr(CompoundingOvernightIndexedCouponPricer)
-class CompoundingOvernightIndexedCouponPricer: public FloatingRateCouponPricer {
+%shared_ptr(OvernightIndexedCouponPricer)
+class OvernightIndexedCouponPricer: public FloatingRateCouponPricer {
   public:
-    CompoundingOvernightIndexedCouponPricer();
+    OvernightIndexedCouponPricer(
+          Handle<OptionletVolatilityStructure> v = Handle<OptionletVolatilityStructure>(),
+          const bool effectiveVolatilityInput = false);
+
+    void setCapletVolatility();
+    Handle<OptionletVolatilityStructure> capletVolatility() const;
+    void setEffectiveVolatilityInput(const bool effectiveVolatilityInput);
+    bool effectiveVolatilityInput() const;
+    virtual Real effectiveCapletVolatility() const;
+    virtual Real effectiveFloorletVolatility() const;
+    virtual Rate capletRate(Rate effectiveCap, bool dailyCapFloor) const;
+    virtual Rate floorletRate(Rate effectiveCap, bool dailyCapFloor) const;
+};
+
+%shared_ptr(CompoundingOvernightIndexedCouponPricer)
+class CompoundingOvernightIndexedCouponPricer: public OvernightIndexedCouponPricer {
+  public:
+    CompoundingOvernightIndexedCouponPricer(
+          Handle<OptionletVolatilityStructure> v = Handle<OptionletVolatilityStructure>(),
+          const bool effectiveVolatilityInput = false);
+
+    Rate effectiveSpread() const;
+    Rate effectiveIndexFixing() const;
 };
 
 %shared_ptr(ArithmeticAveragedOvernightIndexedCouponPricer)
-class ArithmeticAveragedOvernightIndexedCouponPricer: public FloatingRateCouponPricer {
+class ArithmeticAveragedOvernightIndexedCouponPricer: public OvernightIndexedCouponPricer {
     #if !defined(SWIGJAVA) && !defined(SWIGCSHARP)
     %feature("kwargs") ArithmeticAveragedOvernightIndexedCouponPricer;
     #endif
@@ -461,7 +523,25 @@ class ArithmeticAveragedOvernightIndexedCouponPricer: public FloatingRateCouponP
     ArithmeticAveragedOvernightIndexedCouponPricer(
             Real meanReversion = 0.03,
             Real volatility = 0.00,  // NO convexity adjustment by default
-            bool byApprox = false);  // TRUE to use Katsumi Takada approximation
+            bool byApprox = false,  // TRUE to use Katsumi Takada approximation
+            Handle<OptionletVolatilityStructure> v = Handle<OptionletVolatilityStructure>(),
+            const bool effectiveVolatilityInput = false);
+};
+
+%shared_ptr(BlackCompoundingOvernightIndexedCouponPricer)
+class BlackCompoundingOvernightIndexedCouponPricer: public CompoundingOvernightIndexedCouponPricer {
+  public:
+    BlackCompoundingOvernightIndexedCouponPricer(
+          Handle<OptionletVolatilityStructure> v = Handle<OptionletVolatilityStructure>(),
+          const bool effectiveVolatilityInput = false);
+};
+
+%shared_ptr(BlackAveragingOvernightIndexedCouponPricer)
+class BlackAveragingOvernightIndexedCouponPricer: public ArithmeticAveragedOvernightIndexedCouponPricer {
+  public:
+    BlackAveragingOvernightIndexedCouponPricer(
+          Handle<OptionletVolatilityStructure> v = Handle<OptionletVolatilityStructure>(),
+          const bool effectiveVolatilityInput = false);
 };
 
 %shared_ptr(CompoundingMultipleResetsPricer)
@@ -906,7 +986,16 @@ Leg _OvernightLeg(const std::vector<Real>& nominals,
                   const Integer paymentLag = 0,
                   Natural lookbackDays = Null<Natural>(),
                   Natural lockoutDays = 0,
-                  bool applyObservationShift = false) {
+                  bool applyObservationShift = false,
+                  bool compoundSpreadDaily = false,
+                  const std::vector<Rate>& caps = std::vector<Rate>(),
+                  const std::vector<Rate>& floors = std::vector<Rate>(),
+                  const bool nakedOption = false,
+                  const bool dailyCapFloor = true,
+                  const bool inArrears = false,
+                  const ext::optional<Period>& lastRecentPeriod = ext::nullopt,
+                  const Calendar& lastRecentPeriodCalendar = Calendar(),
+                  const std::vector<Date>& paymentDates = std::vector<Date>()) {
     return QuantLib::OvernightLeg(schedule, index)
         .withNotionals(nominals)
         .withPaymentDayCounter(paymentDayCounter)
@@ -919,7 +1008,16 @@ Leg _OvernightLeg(const std::vector<Real>& nominals,
         .withAveragingMethod(averagingMethod)
         .withLookbackDays(lookbackDays)
         .withLockoutDays(lockoutDays)
-        .withObservationShift(applyObservationShift);
+        .withObservationShift(applyObservationShift)
+        .compoundingSpreadDaily(compoundSpreadDaily)
+        .withCaps(caps)
+        .withFloors(floors)
+        .withNakedOption(nakedOption)
+        .withDailyCapFloor(dailyCapFloor)
+        .withInArrears(inArrears)
+        .withLastRecentPeriod(lastRecentPeriod)
+        .withLastRecentPeriodCalendar(lastRecentPeriodCalendar)
+        .withPaymentDates(paymentDates);
 }
 %}
 #if !defined(SWIGJAVA) && !defined(SWIGCSHARP)
@@ -939,7 +1037,16 @@ Leg _OvernightLeg(const std::vector<Real>& nominals,
                   Integer paymentLag = 0,
                   Natural lookbackDays = Null<Natural>(),
                   Natural lockoutDays = 0,
-                  bool applyObservationShift = false);
+                  bool applyObservationShift = false,
+                  bool compoundSpreadDaily = false,
+                  const std::vector<Rate>& caps = std::vector<Rate>(),
+                  const std::vector<Rate>& floors = std::vector<Rate>(),
+                  const bool nakedOption = false,
+                  const bool dailyCapFloor = true,
+                  const bool inArrears = false,
+                  const ext::optional<Period>& lastRecentPeriod = ext::nullopt,
+                  const Calendar& lastRecentPeriodCalendar = Calendar(),
+                  const std::vector<Date>& paymentDates = std::vector<Date>());
 
 %{
 Leg _CmsLeg(const std::vector<Real>& nominals,
